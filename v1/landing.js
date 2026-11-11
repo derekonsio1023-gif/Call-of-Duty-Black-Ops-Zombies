@@ -9,7 +9,7 @@
 //   art/mapselect-row-<id>.webp    the row unfocused (450x40 band, drawn over the base art at the row's place)
 //   art/mapselect-hl-<id>.webp     the row focused (white band, black label)
 //   art/mapselect-panel-<id>.webp  the right side of the menu for that map (title, preview, description)
-// href defaults to the id (the clean page URL /bo1z/<id> = site/<id>.html, a play.js page loaded into this document).
+// href defaults to the map's .html page, which is loaded into this document when picked.
 // flag: only listed with ?<flag>=1. description is the hotspot's accessible description (the art carries the visible one).
 // horde: the map's pack ships the horde overlay (same flag as maps.js MAP_LIST horde; landing.js must not import maps.js,
 // which picks its map once, at import, from the page play.js runs on).
@@ -37,7 +37,7 @@ const query = new URLSearchParams(location.search);
 const forwarded = new URLSearchParams(query); forwarded.delete('horde');
 const entries = ENTRIES.filter(entry => !entry.flag || query.get(entry.flag) === '1');
 // bo1z: clean page URLs (/bo1z/kino, /bo1z/five; the Worker and serve.mjs serve <name>.html there), base-relative (velgg).
-const PAGES = Object.fromEntries(entries.map(entry => [entry.id, new URL(entry.href ?? entry.id, import.meta.url).pathname]));
+const PAGES = Object.fromEntries(entries.map(entry => [entry.id, new URL(entry.href ?? `${entry.id}.html`, import.meta.url).pathname]));
 const pct = (value, total) => `${(value / total * 100).toFixed(3)}%`;
 const rect = (x, y, w, h) => `--x:${pct(x, 1920)};--y:${pct(y, 1080)};--w:${pct(w, 1920)};--h:${pct(h, 1080)}`;
 const stage = document.querySelector('.stage');

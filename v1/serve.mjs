@@ -2,7 +2,7 @@
 
 import { createServer } from 'node:http';
 import { createReadStream } from 'node:fs';
-import { stat, readFile } from 'node:fs/promises';
+import { appendFile, mkdir, stat, readFile } from 'node:fs/promises';
 import { pipeline } from 'node:stream/promises';
 import { join, resolve, extname, sep } from 'node:path';
 
@@ -53,6 +53,63 @@ function send(req, res, status, headers, body = '') {
   res.writeHead(status, { ...ISOLATION, 'Content-Type': 'text/plain; charset=utf-8', 'Content-Length': String(bytes), 'Cache-Control': 'no-store', ...headers });
   res.end(req.method === 'HEAD' ? undefined : body);
   log(req, status, bytes);
+}
+
+function sendJson(req, res, status, body) {
+  const text = JSON.stringify(body);
+  const bytes = Buffer.byteLength(text);
+  res.writeHead(status, { ...ISOLATION, 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': String(bytes), 'Cache-Control': 'no-store' });
+  res.end(req.method === 'HEAD' ? undefined : text);
+  log(req, status, bytes);
+}
+
+function isLoopback(address = '') {
+  return address === '::1' || address === '127.0.0.1' || address.startsWith('127.')
+    || address.startsWith('::ffff:127.');
+}
+
+async function receiveTelemetry(req, res) {
+  if (!isLoopback(req.socket.remoteAddress)) return send(req, res, 404, {}, 'Not found.\n');
+  if (req.method === 'GET' || req.method === 'HEAD') return sendJson(req, res, 200, { enabled: true, build: null });
+  if (req.method !== 'POST') return send(req, res, 405, { Allow: 'GET, HEAD, POST' }, 'Only GET, HEAD, and POST are served.\n');
+
+  if (Number(req.headers['content-length']) > 1048576) {
+    req.resume();
+    return send(req, res, 413, {}, 'Telemetry record is too large.\n');
+  }
+  const chunks = [];
+  let length = 0;
+  try {
+    for await (const chunk of req) {
+      length += chunk.length;
+      if (length > 1048576) {
+        req.resume();
+        return send(req, res, 413, {}, 'Telemetry record is too large.\n');
+      }
+      chunks.push(chunk);
+    }
+  } catch (error) {
+    console.error(`Telemetry request failed: ${error.message}`);
+    return send(req, res, 400, {}, 'Could not read telemetry record.\n');
+  }
+  let record;
+  try { record = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+  catch { return send(req, res, 400, {}, 'Invalid telemetry JSON.\n'); }
+  if (!record || typeof record !== 'object' || Array.isArray(record) || typeof record.type !== 'string') {
+    return send(req, res, 400, {}, 'Telemetry record must be a JSON object with a type.\n');
+  }
+
+  const file = join(ROOT, 'build', 'telemetry');
+  try {
+    await mkdir(join(ROOT, 'build'), { recursive: true });
+    await appendFile(file, JSON.stringify(record) + '\n', 'utf8');
+  } catch (error) {
+    console.error(`Could not save telemetry: ${error.message}`);
+    return send(req, res, 500, {}, 'Could not save telemetry.\n');
+  }
+  res.writeHead(204, { ...ISOLATION, 'Cache-Control': 'no-store' });
+  res.end();
+  log(req, 204, length);
 }
 
 const mb = bytes => bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : bytes >= 1024 ? `${(bytes / 1024).toFixed(0)} kB` : `${bytes} B`;
@@ -124,11 +181,14 @@ async function transportChunk(rel) {
 
 const server = createServer(async (req, res) => {
   req.__t0 = performance.now();
-  if (req.method !== 'GET' && req.method !== 'HEAD') return send(req, res, 405, { Allow: 'GET, HEAD' }, 'Only GET and HEAD are served.\n');
+  if (req.method !== 'GET' && req.method !== 'HEAD' && req.method !== 'POST') return send(req, res, 405, { Allow: 'GET, HEAD, POST' }, 'Only GET, HEAD, and POST are served.\n');
 
   let url, pathname;
   try { url = new URL(req.url, `http://${req.headers.host || HOST}`); pathname = decodeURIComponent(url.pathname); }
   catch { return send(req, res, 400, {}, 'Bad request.\n'); }
+
+  if (pathname === PREFIX + 'telemetry') return receiveTelemetry(req, res);
+  if (req.method === 'POST') return send(req, res, 405, { Allow: 'GET, HEAD' }, 'Only GET and HEAD are served for files.\n');
 
   if (PREFIX !== '/' && (pathname === '/' || pathname === PREFIX.slice(0, -1))) {
     return send(req, res, 308, { Location: PREFIX + (url.search || '') }, `The site is mounted at ${PREFIX}\n`);
